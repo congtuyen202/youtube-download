@@ -56,7 +56,7 @@ Phần mềm hỗ trợ tải video từ YouTube nhanh chóng, dễ sử dụng 
 
 ## 💻 Ảnh giao diện
 
-![YouTube Video Downloader](de5e70ad-e632-43ce-a107-88a9ca644f07.png)
+![YouTube Video Downloader](anh-giao-dien.png)
 
 ---
 
