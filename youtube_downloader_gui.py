@@ -524,6 +524,10 @@ class YouTubeDownloaderGUI:
         self.progress_var.set(0)
         
         def download_thread():
+            successful_downloads = 0
+            failed_downloads = 0
+            failed_videos = []
+            
             try:
                 self.log_message(f"Bắt đầu tải {limit} video từ kênh...")
                 
@@ -551,27 +555,127 @@ class YouTubeDownloaderGUI:
                 else:
                     video_url = base_url
                 
+                # Cấu hình yt-dlp với xử lý lỗi tốt hơn
                 ydl_opts = {
                     'outtmpl': os.path.join(self.output_path, '%(uploader)s - %(title)s.%(ext)s'),
                     'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                     'merge_output_format': 'mp4',
                     'playlistend': limit,
                     'progress_hooks': [self.progress_hook],
+                    'ignoreerrors': True,  # Bỏ qua lỗi và tiếp tục
+                    'no_warnings': False,
+                    'extract_flat': False,
+                    'skip_download': False,
+                    'writeinfojson': False,
+                    'writethumbnail': False,
                 }
+                
+                # Tạo error hook để theo dõi lỗi
+                def error_hook(d):
+                    if d['status'] == 'error':
+                        nonlocal failed_downloads, failed_videos
+                        failed_downloads += 1
+                        video_title = d.get('info_dict', {}).get('title', 'Không xác định')
+                        failed_videos.append(video_title)
+                        self.log_message(f"⚠ Bỏ qua video lỗi: {video_title}")
+                    elif d['status'] == 'finished':
+                        nonlocal successful_downloads
+                        successful_downloads += 1
+                        video_title = d.get('info_dict', {}).get('title', 'Không xác định')
+                        self.log_message(f"✓ Tải thành công: {video_title}")
+                
+                ydl_opts['progress_hooks'].append(error_hook)
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     final_url = f"{video_url}?sort={sort_type}"
-                    ydl.download([final_url])
                     
-                self.log_message("✓ Tải video từ kênh thành công!")
-                self.update_status("Tải video từ kênh thành công!")
-                messagebox.showinfo("Thành công", "Tải video từ kênh thành công!")
+                    try:
+                        # Lấy thông tin playlist trước
+                        self.log_message("Đang lấy danh sách video...")
+                        playlist_info = ydl.extract_info(final_url, download=False)
+                        
+                        if 'entries' in playlist_info:
+                            total_videos = min(len(playlist_info['entries']), limit)
+                            self.log_message(f"Tìm thấy {total_videos} video để tải")
+                            
+                            # Tải từng video một cách riêng biệt
+                            for i, entry in enumerate(playlist_info['entries'][:limit]):
+                                if not self.downloading:  # Kiểm tra nếu user dừng tải
+                                    break
+                                    
+                                try:
+                                    if entry is not None:
+                                        video_title = entry.get('title', f'Video {i+1}')
+                                        self.log_message(f"Đang tải ({i+1}/{total_videos}): {video_title}")
+                                        
+                                        # Tải video đơn lẻ
+                                        single_ydl_opts = ydl_opts.copy()
+                                        single_ydl_opts['progress_hooks'] = [self.progress_hook]
+                                        
+                                        with yt_dlp.YoutubeDL(single_ydl_opts) as single_ydl:
+                                            single_ydl.download([entry['webpage_url']])
+                                        
+                                        successful_downloads += 1
+                                        self.log_message(f"✓ Tải thành công: {video_title}")
+                                    else:
+                                        failed_downloads += 1
+                                        failed_videos.append(f"Video {i+1} (không có thông tin)")
+                                        self.log_message(f"⚠ Bỏ qua video {i+1}: Không có thông tin")
+                                        
+                                except Exception as e:
+                                    failed_downloads += 1
+                                    video_title = entry.get('title', f'Video {i+1}') if entry else f'Video {i+1}'
+                                    failed_videos.append(video_title)
+                                    self.log_message(f"⚠ Lỗi khi tải '{video_title}': {str(e)}")
+                                    continue
+                                    
+                                # Cập nhật progress
+                                progress = ((i + 1) / total_videos) * 100
+                                self.progress_var.set(progress)
+                        else:
+                            # Fallback: tải trực tiếp như cũ
+                            ydl.download([final_url])
+                            successful_downloads = 1
+                            
+                    except Exception as e:
+                        self.log_message(f"Lỗi khi lấy thông tin playlist: {str(e)}")
+                        # Thử tải trực tiếp
+                        try:
+                            ydl.download([final_url])
+                            successful_downloads = 1
+                        except Exception as download_error:
+                            raise download_error
                 
+                # Tóm tắt kết quả
+                summary_msg = f"Hoàn thành! Tải thành công: {successful_downloads} video"
+                if failed_downloads > 0:
+                    summary_msg += f", Bỏ qua: {failed_downloads} video lỗi"
+                    
+                self.log_message(f"✓ {summary_msg}")
+                
+                if failed_videos:
+                    self.log_message("Video bị lỗi:")
+                    for failed_video in failed_videos[:5]:  # Chỉ hiển thị 5 video đầu
+                        self.log_message(f"  - {failed_video}")
+                    if len(failed_videos) > 5:
+                        self.log_message(f"  ... và {len(failed_videos) - 5} video khác")
+                
+                self.update_status(summary_msg)
+                
+                if successful_downloads > 0:
+                    messagebox.showinfo("Hoàn thành", 
+                        f"Tải kênh hoàn thành!\n"
+                        f"Thành công: {successful_downloads} video\n"
+                        f"Lỗi: {failed_downloads} video"
+                    )
+                else:
+                    messagebox.showwarning("Cảnh báo", "Không tải được video nào!")
+                    
             except Exception as e:
-                error_msg = f"Lỗi: {str(e)}"
+                error_msg = f"Lỗi nghiêm trọng: {str(e)}"
                 self.log_message(f"✗ {error_msg}")
                 self.update_status("Tải video từ kênh thất bại!")
-                messagebox.showerror("Lỗi", error_msg)
+                messagebox.showerror("Lỗi", f"Có lỗi xảy ra:\n{error_msg}")
             finally:
                 self.downloading = False
                 self.progress_var.set(0)
